@@ -4,6 +4,7 @@ import ev3dev.hardware.EV3DevMotorDevice;
 import ev3dev.hardware.EV3DevPlatforms;
 import ev3dev.sensors.Battery;
 import ev3dev.utils.DataChannelRereader;
+import ev3dev.utils.DataChannelRewriter;
 import lejos.hardware.port.Port;
 import lejos.robotics.RegulatedMotor;
 import lejos.robotics.RegulatedMotorListener;
@@ -62,6 +63,15 @@ public abstract class BaseRegulatedMotor extends EV3DevMotorDevice implements Re
     private final List<RegulatedMotorListener> listenerList;
 
     private final DataChannelRereader odometerRereader;
+    private final DataChannelRereader stateRereader;
+    private final DataChannelRereader dutyCycleRereader;
+    private final DataChannelRereader speedRereader;
+
+    private final DataChannelRewriter commandRewriter;
+    private final DataChannelRewriter stopCommandRewriter;
+    private final DataChannelRewriter dutyCycleRewriter;
+    private final DataChannelRewriter speedRewriter;
+    private final DataChannelRewriter positionRewriter;
 
     /**
      * Constructor
@@ -102,16 +112,36 @@ public abstract class BaseRegulatedMotor extends EV3DevMotorDevice implements Re
         this.detect(TACHO_MOTOR, port);
         //TODO Review to implement asynchronous solution
         Delay.msDelay(1000);
-        this.setStringAttribute(COMMAND, RESET);
+
+        odometerRereader = new DataChannelRereader(Path.of(PATH_DEVICE.toString(),POSITION),8);
+        stateRereader = new DataChannelRereader(Path.of(PATH_DEVICE.toString(),STATE),32);
+        dutyCycleRereader = new DataChannelRereader(Path.of(PATH_DEVICE.toString(),DUTY_CYCLE),32);
+        speedRereader = new DataChannelRereader(Path.of(PATH_DEVICE.toString(),SPEED),32);
+
+        commandRewriter = new DataChannelRewriter(Path.of(PATH_DEVICE.toString(),COMMAND),32);
+        stopCommandRewriter = new DataChannelRewriter(Path.of(PATH_DEVICE.toString(),STOP_COMMAND),32);
+        dutyCycleRewriter = new DataChannelRewriter(Path.of(PATH_DEVICE.toString(),DUTY_CYCLE),32);
+        speedRewriter = new DataChannelRewriter(Path.of(PATH_DEVICE.toString(),SPEED),32);
+        positionRewriter = new DataChannelRewriter(Path.of(PATH_DEVICE.toString(),POSITION_SP),32);
+
+        commandRewriter.writeString(RESET);
         if (log.isDebugEnabled()) {
             log.debug("Motor ready to use on Port: {}", motorPort.getName());
         }
-        odometerRereader = new DataChannelRereader(Path.of(PATH_DEVICE.toString(),POSITION),8);
     }
 
     @Override
     public void close() throws IOException {
         odometerRereader.close();
+        stateRereader.close();
+        dutyCycleRereader.close();
+        speedRereader.close();
+
+        commandRewriter.close();
+        stopCommandRewriter.close();
+        dutyCycleRewriter.close();
+        speedRewriter.close();
+        positionRewriter.close();
     }
 
     /**
@@ -154,9 +184,9 @@ public abstract class BaseRegulatedMotor extends EV3DevMotorDevice implements Re
     public void forward() {
         this.setSpeedDirect(this.speed);
         if (!this.regulationFlag) {
-            this.setStringAttribute(COMMAND, RUN_DIRECT);
+            commandRewriter.writeString(RUN_DIRECT);
         } else {
-            this.setStringAttribute(COMMAND, RUN_FOREVER);
+            commandRewriter.writeString(RUN_FOREVER);
         }
 
         for (RegulatedMotorListener listener : listenerList) {
@@ -168,9 +198,9 @@ public abstract class BaseRegulatedMotor extends EV3DevMotorDevice implements Re
     public void backward() {
         this.setSpeedDirect(-this.speed);
         if (!this.regulationFlag) {
-            this.setStringAttribute(COMMAND, RUN_DIRECT);
+            commandRewriter.writeString(RUN_DIRECT);
         } else {
-            this.setStringAttribute(COMMAND, RUN_FOREVER);
+            commandRewriter.writeString(RUN_FOREVER);
         }
 
         for (RegulatedMotorListener listener : listenerList) {
@@ -240,8 +270,8 @@ public abstract class BaseRegulatedMotor extends EV3DevMotorDevice implements Re
      * @param immediateReturn Whether the function should busy-wait until the motor stops reporting the 'running' state.
      */
     private void doStop(String mode, boolean immediateReturn) {
-        this.setStringAttribute(STOP_COMMAND, mode);
-        this.setStringAttribute(COMMAND, STOP);
+        stopCommandRewriter.writeString(mode);
+        commandRewriter.writeString(STOP);
 
         if (!immediateReturn) {
             waitComplete();
@@ -265,7 +295,7 @@ public abstract class BaseRegulatedMotor extends EV3DevMotorDevice implements Re
      */
     @Override
     public boolean isMoving() {
-        return (this.getStringAttribute(STATE).contains(STATE_RUNNING));
+        return stateRereader.readString().contains(STATE_RUNNING);
     }
 
     /**
@@ -282,9 +312,9 @@ public abstract class BaseRegulatedMotor extends EV3DevMotorDevice implements Re
 
     private void setSpeedDirect(int speed) {
         if (!this.regulationFlag) {
-            this.setIntegerAttribute(DUTY_CYCLE, speed);
+            dutyCycleRewriter.writeString(Integer.toString(speed));
         } else {
-            this.setIntegerAttribute(SPEED, speed);
+            speedRewriter.writeString(Integer.toString(speed));
         }
     }
 
@@ -293,7 +323,7 @@ public abstract class BaseRegulatedMotor extends EV3DevMotorDevice implements Re
      * will cause any current move operation to be halted.
      */
     public void resetTachoCount() {
-        this.setStringAttribute(COMMAND, RESET);
+        commandRewriter.writeString(RESET);
         this.regulationFlag = true;
     }
 
@@ -306,8 +336,8 @@ public abstract class BaseRegulatedMotor extends EV3DevMotorDevice implements Re
      */
     public void rotate(int angle, boolean immediateReturn) {
         this.setSpeedDirect(this.speed);
-        this.setIntegerAttribute(POSITION_SP, angle);
-        this.setStringAttribute(COMMAND, RUN_TO_REL_POS);
+        positionRewriter.writeString(Integer.toString(angle));
+        commandRewriter.writeString(RUN_TO_REL_POS);
 
         if (!immediateReturn) {
             while (this.isMoving()) {
@@ -338,8 +368,8 @@ public abstract class BaseRegulatedMotor extends EV3DevMotorDevice implements Re
      */
     public void rotateTo(int limitAngle, boolean immediateReturn) {
         this.setSpeedDirect(this.speed);
-        this.setIntegerAttribute(POSITION_SP, limitAngle);
-        this.setStringAttribute(COMMAND, RUN_TO_ABS_POS);
+        positionRewriter.writeString(Integer.toString(limitAngle));
+        commandRewriter.writeString(RUN_TO_ABS_POS);
 
         if (!immediateReturn) {
             while (this.isMoving()) {
@@ -369,9 +399,9 @@ public abstract class BaseRegulatedMotor extends EV3DevMotorDevice implements Re
      */
     public int getSpeed() {
         if (!this.regulationFlag) {
-            return this.getIntegerAttribute(DUTY_CYCLE);
+            return Integer.parseInt(dutyCycleRereader.readString());
         } else {
-            return this.getIntegerAttribute(SPEED);
+            return Integer.parseInt(speedRereader.readString());
         }
 
     }
@@ -382,7 +412,7 @@ public abstract class BaseRegulatedMotor extends EV3DevMotorDevice implements Re
      * @return true if the motors is stalled, else false
      */
     public boolean isStalled() {
-        return (this.getStringAttribute(STATE).contains(STATE_STALLED));
+        return (stateRereader.readString().contains(STATE_STALLED));
     }
 
     /**
